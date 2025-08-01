@@ -1,0 +1,79 @@
+# Test container based on the main MAPT container
+FROM registry.access.redhat.com/ubi9/go-toolset@sha256:6fd64cd7f38a9b87440f963b6c04953d04de65c35b9672dbd7f1805b0ae20d09 as builder
+ARG TARGETARCH
+USER root
+WORKDIR /workspace
+COPY . .
+
+# renovate: datasource=github-releases depName=pulumi/pulumi
+ENV PULUMI_VERSION 3.181.0
+ENV PULUMI_BASE_URL="https://github.com/pulumi/pulumi/releases/download/v${PULUMI_VERSION}/pulumi-v${PULUMI_VERSION}"
+ENV PULUMI_URL="${PULUMI_BASE_URL}-linux-x64.tar.gz"
+
+# Build the application and install Pulumi
+RUN unset VERSION \
+    && GOARCH=${TARGETARCH} make build \
+    && if [ "$TARGETARCH" = "arm64" ]; then export PULUMI_URL="${PULUMI_BASE_URL}-linux-arm64.tar.gz"; fi \
+    && echo ${PULUMI_URL} \
+    && curl -L ${PULUMI_URL} -o pulumicli.tar.gz \
+    && tar -xzvf pulumicli.tar.gz 
+
+# Test runtime environment
+FROM registry.access.redhat.com/ubi9/ubi@sha256:e5ab898b4f3e91e31b4d202e92b4ca409ac18c2de77c4813807b3761332bf556
+ARG TARGETARCH
+LABEL org.opencontainers.image.authors="Redhat Developer"
+LABEL org.opencontainers.image.description="MAPT Integration Test Environment"
+
+# Copy built binaries
+COPY --from=builder /workspace/out/mapt /workspace/pulumi/pulumi /usr/local/bin/
+
+# Set up environment for testing
+ENV PULUMI_CONFIG_PASSPHRASE="test" \
+    AWS_SDK_LOAD_CONFIG=1 \
+    CGO_ENABLED=1 \
+    GOPROXY=direct \
+    GOSUMDB=off
+
+# Install Go for running tests
+ENV GO_VERSION=1.21.13
+RUN curl -L "https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o go.tar.gz \
+    && tar -C /usr/local -xzf go.tar.gz \
+    && rm go.tar.gz \
+    && ln -s /usr/local/go/bin/go /usr/local/bin/go \
+    && ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
+# Install curl for LocalStack health checks
+RUN dnf update -y \
+    && dnf install -y curl git \
+    && dnf clean all \
+    && rm -rf /var/cache/yum
+
+# Pulumi plugins (same as main container)
+ARG PULUMI_AWS_VERSION=v6.83.0
+ARG PULUMI_AWSX_VERSION=v2.22.0
+ARG PULUMI_AZURE_NATIVE_VERSION=v3.5.1
+ARG PULUMI_COMMAND_VERSION=v1.1.0
+ARG PULUMI_TLS_VERSION=v5.2.0
+ARG PULUMI_RANDOM_VERSION=v4.18.2
+ARG PULUMI_AWS_NATIVE_VERSION=v1.30.0
+
+ENV PULUMI_HOME="/opt/mapt/run"
+WORKDIR /workspace
+
+# Install Pulumi plugins
+RUN mkdir -p /opt/mapt/run \
+    && pulumi plugin install resource aws ${PULUMI_AWS_VERSION} \
+    && pulumi plugin install resource azure-native ${PULUMI_AZURE_NATIVE_VERSION} \
+    && pulumi plugin install resource command ${PULUMI_COMMAND_VERSION} \
+    && pulumi plugin install resource tls ${PULUMI_TLS_VERSION} \
+    && pulumi plugin install resource random ${PULUMI_RANDOM_VERSION} \
+    && pulumi plugin install resource awsx ${PULUMI_AWSX_VERSION} \
+    && pulumi plugin install resource aws-native ${PULUMI_AWS_NATIVE_VERSION} \
+    && chown -R 1001:0 /opt/mapt/run \
+    && chmod -R g=u /opt/mapt/run
+
+# Set up test user
+USER 1001
+
+# Default command runs integration tests
+CMD ["go", "test", "-v", "-timeout=10m", "./tests/integration/..."] 

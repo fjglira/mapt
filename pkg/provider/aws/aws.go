@@ -76,12 +76,55 @@ func GetClouProviderCredentials(customCredentials map[string]string) credentials
 		FixedCredentials:  customCredentials}
 }
 
+// isLocalStackEnvironment detects if we're running against LocalStack
+func isLocalStackEnvironment() bool {
+	// Check if AWS_ENDPOINT_URL points to LocalStack
+	endpointURL := os.Getenv("AWS_ENDPOINT_URL")
+	if endpointURL != "" && (strings.Contains(endpointURL, "localhost:4566") || strings.Contains(endpointURL, "localstack")) {
+		return true
+	}
+
+	// Check for LocalStack-specific environment variables
+	if os.Getenv("LOCALSTACK_HOSTNAME") != "" || os.Getenv("USE_LOCALSTACK") == "true" {
+		return true
+	}
+
+	return false
+}
+
+// configureLocalStackEndpoints creates the endpoint configuration for LocalStack
+func configureLocalStackEndpoints() []map[string]interface{} {
+	localStackEndpoint := os.Getenv("AWS_ENDPOINT_URL")
+	if localStackEndpoint == "" {
+		localStackEndpoint = awsConstants.LocalStackEndpoint
+	}
+
+	// List of AWS services commonly used by the project
+	services := []string{
+		"apigateway", "apigatewayv2", "cloudformation", "cloudwatch", "cloudwatchlogs",
+		"cognito", "dynamodb", "ec2", "ecr", "ecs", "efs", "eks", "elb", "elbv2",
+		"events", "iam", "kinesis", "kms", "lambda", "logs", "rds", "route53",
+		"s3", "sns", "sqs", "ssm", "sts",
+	}
+
+	endpoints := make([]map[string]interface{}, 0, len(services))
+	for _, service := range services {
+		endpoints = append(endpoints, map[string]interface{}{
+			service: localStackEndpoint,
+		})
+	}
+
+	return endpoints
+}
+
 func SetAWSCredentials(ctx context.Context, stack auto.Stack, customCredentials map[string]string) error {
 	if maptContext.IsServerless() {
 		if err := setCredentialsForServerless(); err != nil {
 			return err
 		}
 	}
+
+	// Configure credentials
 	for configKey, envKey := range envCredentials {
 		if value, ok := customCredentials[configKey]; ok {
 			if err := stack.SetConfig(ctx, configKey,
@@ -97,6 +140,44 @@ func SetAWSCredentials(ctx context.Context, stack auto.Stack, customCredentials 
 			}
 		}
 	}
+
+	// Configure LocalStack-specific settings if in LocalStack environment
+	if isLocalStackEnvironment() {
+		logging.Debugf("LocalStack environment detected, configuring endpoints and settings")
+
+		// Set LocalStack-specific provider settings
+		localStackSettings := map[string]string{
+			awsConstants.CONFIG_AWS_SKIP_CREDENTIALS_VALIDATION: "true",
+			awsConstants.CONFIG_AWS_SKIP_REGION_VALIDATION:      "true",
+			awsConstants.CONFIG_AWS_SKIP_METADATA_API_CHECK:     "true",
+			awsConstants.CONFIG_AWS_SKIP_REQUESTING_ACCOUNT_ID:  "true",
+			awsConstants.CONFIG_AWS_S3_USE_PATH_STYLE:           "true",
+		}
+
+		for configKey, value := range localStackSettings {
+			if err := stack.SetConfig(ctx, configKey, auto.ConfigValue{Value: value}); err != nil {
+				logging.Errorf("Failed setting LocalStack config %s: %v", configKey, err)
+				return err
+			}
+		}
+
+		// Configure endpoints for LocalStack
+		endpoints := configureLocalStackEndpoints()
+		endpointsJSON, err := json.Marshal(endpoints)
+		if err != nil {
+			logging.Errorf("Failed to marshal LocalStack endpoints: %v", err)
+			return err
+		}
+
+		if err := stack.SetConfig(ctx, awsConstants.CONFIG_AWS_ENDPOINTS,
+			auto.ConfigValue{Value: string(endpointsJSON)}); err != nil {
+			logging.Errorf("Failed setting LocalStack endpoints: %v", err)
+			return err
+		}
+
+		logging.Debugf("LocalStack configuration applied successfully")
+	}
+
 	return nil
 }
 

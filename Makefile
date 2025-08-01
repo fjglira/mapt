@@ -60,6 +60,9 @@ vendor:
 .PHONY: check
 check: build test lint
 
+.PHONY: check-all
+check-all: build test-all lint
+
 # Start of the actual build targets
 
 .PHONY: install
@@ -75,6 +78,55 @@ build: $(BUILD_DIR)/mapt
 .PHONY: test
 test:
 	CGO_ENABLED=1 go test -race --tags build -v -ldflags="$(VERSION_VARIABLES)" ./pkg/... ./cmd/...
+
+.PHONY: test-integration
+test-integration:
+	@echo "Running integration tests with LocalStack (host)..."
+	@which docker > /dev/null || (echo "Docker is required for integration tests" && exit 1)
+	@which curl > /dev/null || (echo "curl is required for LocalStack health checks and Pulumi CLI installation" && exit 1)
+	CGO_ENABLED=1 go test -v -tags integration ./tests/integration/...
+
+.PHONY: test-integration-verbose
+test-integration-verbose:
+	@echo "Running integration tests with LocalStack (host, verbose)..."
+	@which docker > /dev/null || (echo "Docker is required for integration tests" && exit 1)
+	@which curl > /dev/null || (echo "curl is required for LocalStack health checks and Pulumi CLI installation" && exit 1)
+	CGO_ENABLED=1 go test -v -ginkgo.v -tags integration ./tests/integration/...
+
+.PHONY: test-integration-container
+test-integration-container:
+	@echo "Running integration tests in containerized environment..."
+	@which docker > /dev/null || (echo "Docker is required for containerized tests" && exit 1)
+	@which docker-compose > /dev/null || (echo "Docker Compose is required for containerized tests" && exit 1)
+	docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit mapt-test
+
+.PHONY: test-integration-container-build
+test-integration-container-build:
+	@echo "Building test container..."
+	docker build -f oci/Containerfile.test -t mapt:test .
+
+.PHONY: test-unit-container
+test-unit-container:
+	@echo "Running unit tests in containerized environment..."
+	@which docker > /dev/null || (echo "Docker is required for containerized tests" && exit 1)
+	@which docker-compose > /dev/null || (echo "Docker Compose is required for containerized tests" && exit 1)
+	docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit mapt-unit-test
+
+.PHONY: test-aws-container
+test-aws-container:
+	@echo "Running AWS integration tests in containerized environment..."
+	@which docker > /dev/null || (echo "Docker is required for containerized tests" && exit 1)
+	@which docker-compose > /dev/null || (echo "Docker Compose is required for containerized tests" && exit 1)
+	docker-compose -f docker-compose.test.yml run --rm mapt-test-single go test -v -timeout=10m ./tests/integration/aws/
+
+.PHONY: test-container-cleanup
+test-container-cleanup:
+	@echo "Cleaning up test containers..."
+	docker-compose -f docker-compose.test.yml down -v --remove-orphans || true
+	docker image prune -f --filter label=org.opencontainers.image.description="MAPT Integration Test Environment" || true
+
+.PHONY: test-all
+test-all: test test-integration
 
 .PHONY: clean ## Remove all build artifacts
 clean:

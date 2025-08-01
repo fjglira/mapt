@@ -1,0 +1,12 @@
+# Integration test artifacts
+localstack_data/
+*.log
+.DS_Store
+
+# Test output files
+/tmp/mapt-integration-test/
+/tmp/integration-test-results/
+
+# Coverage files
+*.out
+coverage.html 

@@ -1,0 +1,99 @@
+version: "3.8"
+
+services:
+  localstack:
+    container_name: localstack-test
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=ec2,iam,s3,sts,cloudformation,logs
+      - DEBUG=1
+      - LOCALSTACK_HOST=localstack:4566
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  mapt-test:
+    build:
+      context: .
+      dockerfile: oci/Containerfile.test
+    environment:
+      # LocalStack configuration
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_REGION=us-east-1
+      - USE_LOCALSTACK=true
+      # Pulumi configuration
+      - PULUMI_CONFIG_PASSPHRASE=test
+      - PULUMI_SKIP_UPDATE_CHECK=true
+      # Test configuration
+      - CGO_ENABLED=1
+      - MAPT_TEST_CONTAINER=true
+    volumes:
+      - .:/workspace:ro
+      - test-cache:/tmp
+    working_dir: /workspace
+    depends_on:
+      localstack:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo 'Waiting for LocalStack to be ready...' &&
+        curl -f http://localstack:4566/_localstack/health --retry 10 --retry-delay 5 &&
+        echo 'Running integration tests...' &&
+        go test -v -timeout=10m ./tests/integration/...
+      "
+
+  # For running unit tests (no LocalStack dependency)
+  mapt-unit-test:
+    build:
+      context: .
+      dockerfile: oci/Containerfile.test
+    environment:
+      - CGO_ENABLED=1
+      - PULUMI_CONFIG_PASSPHRASE=test
+    volumes:
+      - .:/workspace:ro
+      - test-cache:/tmp
+    working_dir: /workspace
+    command: go test -v -race ./pkg/... ./cmd/...
+
+  # For running a single test package
+  mapt-test-single:
+    build:
+      context: .
+      dockerfile: oci/Containerfile.test
+    environment:
+      # LocalStack configuration
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_REGION=us-east-1
+      - USE_LOCALSTACK=true
+      # Pulumi configuration
+      - PULUMI_CONFIG_PASSPHRASE=test
+      - PULUMI_SKIP_UPDATE_CHECK=true
+      # Test configuration
+      - CGO_ENABLED=1
+      - MAPT_TEST_CONTAINER=true
+    volumes:
+      - .:/workspace:ro
+      - test-cache:/tmp
+    working_dir: /workspace
+    depends_on:
+      localstack:
+        condition: service_healthy
+    # Override with: docker-compose -f docker-compose.test.yml run --rm mapt-test-single go test -v ./tests/integration/aws/
+
+volumes:
+  test-cache:
